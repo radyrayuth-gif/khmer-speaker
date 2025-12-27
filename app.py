@@ -2,60 +2,55 @@ import streamlit as st
 import asyncio
 import edge_tts
 import re
-from pydub import AudioSegment
 import io
+from pydub import AudioSegment
 
-st.set_page_config(page_title="Khmer AI Timed SRT", page_icon="⏱️")
-st.title("⏱️ កម្មវិធីបំប្លែង SRT ឱ្យត្រូវតាមម៉ោង")
+st.set_page_config(page_title="Khmer SRT Sync", page_icon="⏱️")
+st.title("🎬 បំប្លែង SRT ឱ្យត្រូវតាមម៉ោង (ពិសិដ្ឋ & ស្រីមុំ)")
 
-# មុខងារបំប្លែងម៉ោង SRT (00:00:01,000) ទៅជា មីលីវិនាទី (ms)
 def time_to_ms(time_str):
-    h, m, s = time_str.split(':')
-    s, ms = s.split(',')
+    h, m, s_ms = time_str.split(':')
+    s, ms = s_ms.split(',')
     return (int(h) * 3600 + int(m) * 60 + int(s)) * 1000 + int(ms)
 
-# មុខងារទាញយកទិន្នន័យពី SRT
 def parse_srt(content):
     pattern = re.compile(r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n(.*?)(?=\n\n|\n$|$)', re.DOTALL)
     return pattern.findall(content)
 
-async def generate_segment_audio(text, voice):
+async def get_voice(text, voice):
     communicate = edge_tts.Communicate(text, voice)
-    audio_data = b""
+    data = b""
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
-            audio_data += chunk["data"]
-    return audio_data
+            data += chunk["data"]
+    return data
 
-st.subheader("បញ្ចូលហ្វាយ SRT របស់អ្នក")
-srt_input = st.text_area("បិទភ្ជាប់អត្ថបទ SRT ទីនេះ:", height=200)
-voice_choice = st.selectbox("ជ្រើសរើសសំឡេង:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
+voice = st.radio("ជ្រើសរើសសំឡេង:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"], horizontal=True)
+srt_text = st.text_area("បិទភ្ជាប់អត្ថបទ SRT ទីនេះ:", height=250, placeholder="1\n00:00:01,000 --> 00:00:03,000\nសួស្តីបងប្អូនទាំងអស់គ្នា។")
 
-if st.button("ចាប់ផ្តើមផលិតសំឡេងតាមម៉ោង"):
-    if srt_input:
-        segments = parse_srt(srt_input)
-        if not segments:
-            st.error("ទម្រង់ SRT មិនត្រឹមត្រូវ!")
-        else:
-            with st.spinner('កំពុងបញ្ចូលសំឡេងតាមម៉ោង... សូមរង់ចាំ'):
-                # បង្កើតសំឡេងទទេ (Silence) ជាមេ
-                last_end_time = time_to_ms(segments[-1][2])
-                combined_audio = AudioSegment.silent(duration=last_end_time + 1000)
-
-                for index, start_str, end_str, text in segments:
+if st.button("ចាប់ផ្តើមផលិតសំឡេង Sync តាមម៉ោង"):
+    if srt_text:
+        segments = parse_srt(srt_text)
+        if segments:
+            with st.spinner('កំពុងផលិត... សូមរង់ចាំបន្តិច'):
+                # បង្កើតសំឡេងទទេប្រវែង 10 នាទីជាមូលដ្ឋាន (អាចកើនតាមជាក់ស្តែង)
+                full_audio = AudioSegment.silent(duration=0)
+                
+                for _, start_str, end_str, text in segments:
                     start_ms = time_to_ms(start_str)
+                    audio_data = asyncio.run(get_voice(text.replace('\n', ' '), voice))
+                    seg = AudioSegment.from_file(io.BytesIO(audio_data), format="mp3")
                     
-                    # បង្កើតសំឡេង AI សម្រាប់ឃ្លានីមួយៗ
-                    raw_audio = asyncio.run(generate_segment_audio(text.replace('\n', ' '), voice_choice))
-                    seg_audio = AudioSegment.from_file(io.BytesIO(raw_audio), format="mp3")
+                    # ពង្រីកសំឡេងមេ ប្រសិនបើខ្លីជាងម៉ោងក្នុង SRT
+                    if len(full_audio) < start_ms:
+                        full_audio += AudioSegment.silent(duration=start_ms - len(full_audio))
                     
-                    # បញ្ចូលសំឡេងទៅក្នុងម៉ោងដែលបានកំណត់
-                    combined_audio = combined_audio.overlay(seg_audio, position=start_ms)
+                    full_audio = full_audio.overlay(seg, position=start_ms)
 
-                # រក្សាទុកលទ្ធផល
-                buffer = io.BytesIO()
-                combined_audio.export(buffer, format="mp3")
-                st.audio(buffer.getvalue(), format="audio/mp3")
-                st.success("ការបញ្ចូលសំឡេងតាមម៉ោងបានជោគជ័យ!")
-    else:
-        st.error("សូមបញ្ចូលអត្ថបទ!")
+                out = io.BytesIO()
+                full_audio.export(out, format="mp3")
+                st.audio(out.getvalue(), format="audio/mp3")
+                st.download_button("📥 ទាញយក MP3", out.getvalue(), "voice_sync.mp3", "audio/mp3")
+        else:
+            st.error("ទម្រង់ SRT មិនត្រឹមត្រូវ!")
+
