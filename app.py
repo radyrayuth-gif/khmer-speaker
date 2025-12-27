@@ -2,55 +2,57 @@ import streamlit as st
 import asyncio
 import edge_tts
 import re
-import os
-# រៀបចំទម្រង់វេបសាយ
-st.set_page_config(page_title="Khmer AI SRT Reader", page_icon="🎬")
-st.title("🎬 កម្មវិធីអានហ្វាយ SRT (ពិសិដ្ឋ & ស្រីមុំ)")
-# មុខងារជំនួយសម្រាប់សម្អាតអត្ថបទ SRT
-def clean_srt(content):
-    # លុបលេខរៀង និងពេលវេលាចេញ ទុកតែអត្ថបទ
-    lines = re.sub(r'\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}', '', content)
-    clean_lines = [line.strip() for line in lines.split('\n') if line.strip()]
-    return " ".join(clean_lines)
-# មុខងារបំប្លែងសំឡេង
-async def process_tts(text, voice, output_file):
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(output_file)
-# ជ្រើសរើសសំឡេង
-voice_dict = {
-    "ស្រីមុំ (Sreymom)": "km-KH-SreymomNeural",
-    "ពិសិដ្ឋ (Piseth)": "km-KH-PisethNeural"
-}
-selected_label = st.selectbox("ជ្រើសរើសសំឡេងអាន:", list(voice_dict.keys()))
-selected_voice = voice_dict[selected_label]
-# កន្លែង Upload File SRT
-uploaded_file = st.file_uploader("សូមដាក់ហ្វាយ .srt នៅទីនេះ", type=["srt"])
-if uploaded_file is not None:
-    # អានមាតិកាក្នុងហ្វាយ
-    srt_content = uploaded_file.read().decode("utf-8")
-    st.text_area("មាតិកាក្នុងហ្វាយ SRT:", srt_content, height=150)
+import io
+# រៀបចំទម្រង់វេបសាយឱ្យស្អាត
+st.set_page_config(page_title="SRT to Speech - Khmer AI", layout="wide")
+st.title("🎙️ Khmer SRT to Speech Converter")
+st.write("បំប្លែងហ្វាយ Subtitle (SRT) ទៅជាសំឡេង MP3 ដោយប្រើសំឡេង ពិសិដ្ឋ និង ស្រីមុំ")
+# មុខងារសម្អាតអត្ថបទ SRT (ដកលេខរៀង និងពេលវេលាចេញ)
+def parse_srt(srt_content):
+    lines = srt_content.split('\n')
+    text_only = []
+    for line in lines:
+        if not re.match(r'(\d+)|(\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3})', line.strip()) and line.strip():
+            text_only.append(line.strip())
+    return " ".join(text_only)
+# បង្កើត Columns សម្រាប់ UI
+col1, col2 = st.columns([2, 1])
+with col1:
+    st.subheader("បញ្ចូលអត្ថបទ SRT")
+    srt_input = st.text_area("បិទភ្ជាប់ (Paste) អត្ថបទ SRT នៅទីនេះ:", height=300, placeholder="1\n00:00:00,300 --> 00:00:01,050\nសួស្តីថ្ងៃថ្មី។")
     
-    if st.button("ចាប់ផ្តើមបំប្លែងទៅជាសំឡេង"):
-        # សម្អាតអត្ថបទឱ្យនៅតែអក្សរសុទ្ធ
-        clean_text = clean_srt(srt_content)
-        
-        if clean_text:
-            output_path = "srt_voice_output.mp3"
-            with st.spinner('កំពុងបង្កើតសំឡេង... សូមរង់ចាំ'):
-                asyncio.run(process_tts(clean_text, selected_voice, output_path))
-                
-                # បង្ហាញលទ្ធផល
-                audio_file = open(output_path, "rb")
-                st.audio(audio_file.read(), format="audio/mp3")
-                st.success("ការបំប្លែងបានជោគជ័យ!")
+    uploaded_file = st.file_uploader("ឬ Upload ហ្វាយ .srt", type=["srt"])
+    if uploaded_file is not None:
+        srt_input = uploaded_file.read().decode("utf-8")
+with col2:
+    st.subheader("កំណត់សំឡេង")
+    voice_choice = st.radio("ជ្រើសរើសអ្នកនិយាយ:", ["ស្រីមុំ (Sreymom)", "ពិសិដ្ឋ (Piseth)"])
+    voice_id = "km-KH-SreymomNeural" if "ស្រីមុំ" in voice_choice else "km-KH-PisethNeural"
+    
+    speed = st.slider("ល្បឿននិយាយ:", 0.5, 1.5, 1.0)
+    rate = f"{'+' if speed >= 1 else '-'}{int(abs(speed-1)*100)}%"
+    if st.button("បំប្លែងទៅជាសំឡេង", use_container_width=True):
+        if srt_input:
+            clean_text = parse_srt(srt_input)
+            
+            async def generate():
+                communicate = edge_tts.Communicate(clean_text, voice_id, rate=rate)
+                audio_data = b""
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio_data += chunk["data"]
+                return audio_data
+            with st.spinner('កំពុងដំណើរការ...'):
+                audio_bytes = asyncio.run(generate())
+                st.audio(audio_bytes, format="audio/mp3")
                 
                 # ប៊ូតុងទាញយក
-                with open(output_path, "rb") as file:
-                    st.download_button(
-                        label="ទាញយកហ្វាយសំឡេង (MP3)",
-                        data=file,
-                        file_name="khmer_ai_voice.mp3",
-                        mime="audio/mp3"
-                    )
+                st.download_button(
+                    label="📥 ទាញយកហ្វាយ MP3",
+                    data=audio_bytes,
+                    file_name="khmer_voice.mp3",
+                    mime="audio/mp3",
+                    use_container_width=True
+                )
         else:
-            st.error("ហ្វាយ SRT របស់អ្នកមិនមានអត្ថបទសម្រាប់អានទេ។")
+            st.error("សូមបញ្ចូលអត្ថបទ SRT ជាមុនសិន!")
